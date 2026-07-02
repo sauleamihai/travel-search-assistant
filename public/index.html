@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Travel Search</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #f4f6f8;
+      margin: 0;
+      padding: 24px;
+      color: #202124;
+    }
+    .app {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .app-header {
+      font-size: 1.6rem;
+      font-weight: bold;
+      margin-bottom: 16px;
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .tab-button {
+      background: white;
+      border: 1px solid #dadce0;
+      padding: 10px 20px;
+      border-radius: 24px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: #5f6368;
+    }
+    .tab-button.active {
+      background: #1a73e8;
+      color: white;
+      border-color: #1a73e8;
+    }
+    .panel {
+      display: none;
+    }
+    .panel.active {
+      display: block;
+    }
+    .search-form {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      padding: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: flex-end;
+      margin-bottom: 20px;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 150px;
+    }
+    .field label {
+      font-size: 0.8rem;
+      color: #5f6368;
+      font-weight: 600;
+    }
+    .field input {
+      padding: 10px 12px;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      font-size: 0.95rem;
+    }
+    .field input:focus {
+      outline: none;
+      border-color: #1a73e8;
+    }
+    .checkbox-field {
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+    }
+    .autocomplete {
+      position: relative;
+    }
+    .autocomplete-list {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      margin-top: 4px;
+      background: white;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+      max-height: 240px;
+      overflow-y: auto;
+      z-index: 20;
+      min-width: 260px;
+    }
+    .autocomplete-list.active {
+      display: block;
+    }
+    .autocomplete-item {
+      padding: 9px 12px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    .autocomplete-item .ac-code {
+      font-weight: 700;
+      color: #1a73e8;
+      margin-right: 6px;
+    }
+    .autocomplete-item .ac-sub {
+      color: #5f6368;
+      font-size: 0.8rem;
+    }
+    .autocomplete-item:hover,
+    .autocomplete-item.highlighted {
+      background: #e8f0fe;
+    }
+    .autocomplete-empty {
+      padding: 9px 12px;
+      color: #5f6368;
+      font-size: 0.85rem;
+    }
+    .search-button {
+      background: #1a73e8;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: bold;
+      font-size: 0.95rem;
+      height: 42px;
+    }
+    .search-button:hover {
+      background: #1557b0;
+    }
+    .status-message {
+      padding: 12px 0;
+      color: #5f6368;
+    }
+    .status-message.error {
+      color: #c5221f;
+    }
+    .results-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .card img {
+      width: 100%;
+      height: 160px;
+      object-fit: cover;
+      background: #eee;
+    }
+    .card-body {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+    }
+    .card-title {
+      font-weight: 600;
+      font-size: 1rem;
+      line-height: 1.3;
+    }
+    .card-meta {
+      font-size: 0.85rem;
+      color: #5f6368;
+    }
+    .card-price {
+      font-size: 1.1rem;
+      font-weight: bold;
+      color: #1a73e8;
+      margin-top: auto;
+    }
+    .card-link {
+      display: inline-block;
+      margin-top: 8px;
+      background: #1a73e8;
+      color: white;
+      text-decoration: none;
+      padding: 10px;
+      border-radius: 8px;
+      text-align: center;
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    .card-link:hover {
+      background: #1557b0;
+    }
+    .flight-card .card-body {
+      gap: 4px;
+    }
+    .flight-segment {
+      font-size: 0.85rem;
+      color: #3c4043;
+      border-top: 1px solid #f1f3f4;
+      padding-top: 6px;
+      margin-top: 6px;
+    }
+    .flight-segment img {
+      width: 18px;
+      height: 18px;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    .badge {
+      display: inline-block;
+      background: #e8f0fe;
+      color: #1a73e8;
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 10px;
+      margin-right: 4px;
+    }
+    .chat-container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      display: flex;
+      flex-direction: column;
+      height: 65vh;
+      overflow: hidden;
+    }
+    .chat-messages {
+      flex: 1;
+      padding: 15px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .chat-message {
+      max-width: 80%;
+      padding: 10px 14px;
+      border-radius: 18px;
+      font-size: 0.95rem;
+      line-height: 1.4;
+      word-wrap: break-word;
+      white-space: pre-wrap;
+    }
+    .chat-message.user {
+      background-color: #1a73e8;
+      color: white;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+    .chat-message.bot {
+      background-color: #f1f3f4;
+      color: #202124;
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+    }
+    .chat-input-area {
+      border-top: 1px solid #e0e0e0;
+      padding: 15px;
+      display: flex;
+      gap: 10px;
+      background: #fff;
+    }
+    .chat-input-area input {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid #dadce0;
+      border-radius: 24px;
+      outline: none;
+      font-size: 1rem;
+    }
+    .chat-input-area input:focus {
+      border-color: #1a73e8;
+    }
+    .chat-input-area button {
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app">
+  <div class="app-header">✈️ Travel Search</div>
+
+  <div class="tabs">
+    <button class="tab-button active" data-tab="hotels">Hotels</button>
+    <button class="tab-button" data-tab="airbnb">Airbnb</button>
+    <button class="tab-button" data-tab="flights">Flights</button>
+    <button class="tab-button" data-tab="chat">Chat Assistant</button>
+  </div>
+
+  <!-- Hotels -->
+  <div class="panel active" id="panel-hotels">
+    <div class="search-form">
+      <div class="field">
+        <label for="hotelLocation">Destination</label>
+        <div class="autocomplete">
+          <input type="text" id="hotelLocation" placeholder="e.g. Rome" autocomplete="off">
+          <div class="autocomplete-list" id="hotelLocationList"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="hotelCheckIn">Check-in</label>
+        <input type="date" id="hotelCheckIn">
+      </div>
+      <div class="field">
+        <label for="hotelCheckOut">Check-out</label>
+        <input type="date" id="hotelCheckOut">
+      </div>
+      <div class="field">
+        <label for="hotelAdults">Adults</label>
+        <input type="number" id="hotelAdults" min="1" value="2">
+      </div>
+      <button class="search-button" id="hotelSearchButton">Search</button>
+    </div>
+    <div class="status-message" id="hotelStatus"></div>
+    <div class="results-grid" id="hotelResults"></div>
+  </div>
+
+  <!-- Airbnb -->
+  <div class="panel" id="panel-airbnb">
+    <div class="search-form">
+      <div class="field">
+        <label for="airbnbLocation">Destination</label>
+        <div class="autocomplete">
+          <input type="text" id="airbnbLocation" placeholder="e.g. Rome" autocomplete="off">
+          <div class="autocomplete-list" id="airbnbLocationList"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="airbnbCheckIn">Check-in</label>
+        <input type="date" id="airbnbCheckIn">
+      </div>
+      <div class="field">
+        <label for="airbnbCheckOut">Check-out</label>
+        <input type="date" id="airbnbCheckOut">
+      </div>
+      <div class="field">
+        <label for="airbnbAdults">Adults</label>
+        <input type="number" id="airbnbAdults" min="1" value="2">
+      </div>
+      <button class="search-button" id="airbnbSearchButton">Search</button>
+    </div>
+    <div class="status-message" id="airbnbStatus"></div>
+    <div class="results-grid" id="airbnbResults"></div>
+  </div>
+
+  <!-- Flights -->
+  <div class="panel" id="panel-flights">
+    <div class="search-form">
+      <div class="field">
+        <label for="flightFrom">From (airport or city)</label>
+        <div class="autocomplete">
+          <input type="text" id="flightFrom" placeholder="e.g. JFK or New York" autocomplete="off">
+          <div class="autocomplete-list" id="flightFromList"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="flightTo">To (airport or city)</label>
+        <div class="autocomplete">
+          <input type="text" id="flightTo" placeholder="e.g. LHR or London" autocomplete="off">
+          <div class="autocomplete-list" id="flightToList"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="flightDepart">Depart</label>
+        <input type="date" id="flightDepart">
+      </div>
+      <div class="field">
+        <label for="flightReturn">Return (optional)</label>
+        <input type="date" id="flightReturn">
+      </div>
+      <div class="field">
+        <label for="flightAdults">Adults</label>
+        <input type="number" id="flightAdults" min="1" value="1">
+      </div>
+      <button class="search-button" id="flightSearchButton">Search</button>
+    </div>
+    <div class="status-message" id="flightStatus"></div>
+    <div class="results-grid" id="flightResults"></div>
+  </div>
+
+  <!-- Chat Assistant -->
+  <div class="panel" id="panel-chat">
+    <div class="chat-container">
+      <div class="chat-messages" id="chatMessages">
+        <div class="chat-message bot">Hi! Ask me about hotels, Airbnb stays, or flights — I can also tell you if flight prices are trending up or down and suggest cheaper nearby dates.</div>
+      </div>
+      <div class="chat-input-area">
+        <input type="text" id="chatInput" placeholder="e.g. 'What's the best week to fly JFK to LHR in August?'">
+        <button class="search-button" id="chatSendButton">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+
+</body>
+</html>
