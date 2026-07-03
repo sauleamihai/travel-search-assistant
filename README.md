@@ -7,7 +7,7 @@ Search hotels, Airbnb listings, and flights side by side, or ask the built-in as
 ## Features
 
 - **Hotels & Airbnb search** — live listings with photos, ratings, amenities, and direct booking links, powered by SerpApi and SearchApi.
-- **Flight search** — nonstop/connection details, per-segment airline info, and a link straight to Google Flights.
+- **Flight search** — nonstop/connection details, per-segment airline info, and a link straight to Google Flights. If Google Flights has no listings for a route, it automatically retries via an Apify "flight-price-scraper" fallback (Google Flights, Kiwi, Travelpayouts, Ryanair, EasyJet, Wizz Air, Norwegian) — optional, see `APIFY_TOKEN` below.
 - **Flight price insight** — current price vs. typical range, trend direction (up/down), and a nearby-date price comparison to help you spot the cheapest time to book.
 - **Worldwide airport & city autocomplete** — a custom-built, fully clickable dropdown backed by a static dataset of 6,000+ airports and 5,700+ cities (OpenFlights), searchable by IATA code, city, airport name, or country.
 - **AI chat assistant** — a LangChain + Groq-powered agent that can call the same live search tools conversationally, with streaming responses.
@@ -45,6 +45,7 @@ The app will be available at `http://localhost:3000`.
 | `GROQ_API_KEY` | Groq API key, used by the chat assistant |
 | `SERPAPI_API_KEY` | SerpApi key, used for hotel and flight search |
 | `SEARCHAPI_API_KEY` | SearchApi key, used for Airbnb search |
+| `APIFY_TOKEN` | *(Optional)* Apify API token, enables the flight-price-scraper fallback when Google Flights returns no results. Billed per-run/per-result on your Apify account — leave blank to disable. |
 
 ## Project structure
 

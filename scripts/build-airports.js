@@ -38,6 +38,11 @@ function parseCsvLine(line) {
   return fields;
 }
 
+// Airports missing from (or too new for) the OpenFlights snapshot, added by hand.
+const MANUAL_ADDITIONS = [
+  { code: 'GHV', name: 'Brașov-Ghimbav International Airport', city: 'Brasov', country: 'Romania' },
+];
+
 const raw = fs.readFileSync(inputPath, 'utf8');
 const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
 
@@ -56,6 +61,12 @@ for (const line of lines) {
   seen.add(code);
 
   airports.push({ code, name, city, country });
+}
+
+for (const manual of MANUAL_ADDITIONS) {
+  if (seen.has(manual.code)) continue;
+  seen.add(manual.code);
+  airports.push(manual);
 }
 
 airports.sort((a, b) => a.city.localeCompare(b.city));

@@ -15,6 +15,9 @@ for (const requiredVar of ['GROQ_API_KEY', 'SERPAPI_API_KEY', 'SEARCHAPI_API_KEY
     console.warn(`[startup] Missing required env var: ${requiredVar}`);
   }
 }
+if (!process.env.APIFY_TOKEN) {
+  console.warn('[startup] Missing optional env var: APIFY_TOKEN (flight fallback disabled — Google Flights failures/empty results will not retry via the Apify flight-price-scraper actor).');
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -101,11 +104,199 @@ function addDays(dateStr, days) {
   return date.toISOString().slice(0, 10);
 }
 
-function cheapestPrice(rawData) {
-  const options = [...(rawData.best_flights || []), ...(rawData.other_flights || [])];
-  const prices = options.map((option) => option.price).filter((price) => typeof price === 'number');
+// ---------------------------------------------------------------------------
+// Flight result normalization — SerpApi (Google Flights) is the primary
+// source. If it errors out or returns zero results, we retry once via the
+// Apify "flight-price-scraper" actor as a fallback, and normalize both shapes
+// into one common structure so the rest of the app doesn't need to care which
+// source actually answered.
+// ---------------------------------------------------------------------------
+
+function normalizeSerpApiFlights(rawData) {
+  const flightOptions = [...(rawData.best_flights || []), ...(rawData.other_flights || [])];
+
+  const flights = flightOptions.map((option) => ({
+    price: option.price ?? null,
+    totalDuration: option.total_duration ?? null,
+    stops: (option.flights?.length || 1) - 1,
+    type: option.type || null,
+    // SerpApi doesn't expose a per-option deep link — only the search-wide
+    // google_flights_url below — so per-flight bookingUrl is always null here.
+    bookingUrl: null,
+    segments: (option.flights || []).map((segment) => ({
+      airline: segment.airline || null,
+      airlineLogo: segment.airline_logo || null,
+      flightNumber: segment.flight_number || null,
+      departureAirport: segment.departure_airport?.id || null,
+      departureTime: segment.departure_airport?.time || null,
+      arrivalAirport: segment.arrival_airport?.id || null,
+      arrivalTime: segment.arrival_airport?.time || null,
+      duration: segment.duration ?? null,
+    })),
+  }));
+
+  return {
+    source: 'google_flights',
+    flights,
+    priceInsights: rawData.price_insights || null,
+    bookingUrl: rawData.search_metadata?.google_flights_url || null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Flight fallback — Apify's "flight-price-scraper" actor
+// (https://apify.com/makework36/flight-price-scraper). Replaces the old Sky
+// Scrapper (RapidAPI) integration: it takes plain IATA codes directly (no
+// separate airport-ID resolution step, so no more two-call rate-limit dance)
+// and aggregates fares from Google Flights, Kiwi, Travelpayouts, Ryanair,
+// EasyJet, Wizz Air, and Norwegian in a single call — including real
+// per-flight booking links. Apify bills per actor-run plus per result item on
+// the account tied to APIFY_TOKEN, so this is only invoked when Google
+// Flights genuinely returns nothing.
+// ---------------------------------------------------------------------------
+
+const APIFY_FLIGHT_ACTOR_URL = 'https://api.apify.com/v2/acts/makework36~flight-price-scraper/run-sync-get-dataset-items';
+
+async function callApifyFlightScraper({ departureId, arrivalId, outboundDate, returnDate, adults }) {
+  const url = new URL(APIFY_FLIGHT_ACTOR_URL);
+  url.searchParams.append('token', process.env.APIFY_TOKEN);
+
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      origin: departureId,
+      destination: arrivalId,
+      departDate: outboundDate,
+      ...(returnDate ? { returnDate } : {}),
+      adults: Number(adults) || 1,
+      cabinClass: 'ECONOMY',
+      currency: 'USD',
+      maxFlights: 50,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Apify flight-price-scraper request returned status: ${response.status}`);
+  }
+  return response.json();
+}
+
+// The actor returns durations as strings like "5h 32m" rather than minutes.
+function parseDurationToMinutes(duration) {
+  if (typeof duration === 'number') return duration;
+  if (typeof duration !== 'string') return null;
+  const hoursMatch = duration.match(/(\d+)\s*h/);
+  const minutesMatch = duration.match(/(\d+)\s*m/);
+  if (!hoursMatch && !minutesMatch) return null;
+  const hours = hoursMatch ? parseInt(hoursMatch[1], 10) : 0;
+  const minutes = minutesMatch ? parseInt(minutesMatch[1], 10) : 0;
+  return hours * 60 + minutes;
+}
+
+// Verified live against real calls: when the actor finds nothing for a
+// route/date, it returns a single dataset item shaped like
+// `{ error: "No flights found...", origin, destination, departDate, ... }`
+// rather than an empty array — those must be filtered out, not treated as a
+// flight result. Also confirmed live: successful items commonly have an
+// empty `segments: []` with the only real flight detail (airline, times,
+// duration) sitting at the top level of the item, so we synthesize a single
+// segment from those fields when segments is empty instead of showing "no
+// segment details available" for a flight that in fact has full data.
+function normalizeApifyFlights(items, { departureId, arrivalId, outboundDate, returnDate } = {}) {
+  const validItems = (items || []).filter((item) => !item.error);
+
+  const flights = validItems.map((item) => {
+    const priceValues = item.prices
+      ? Object.values(item.prices).filter((price) => typeof price === 'number')
+      : [];
+    const price = typeof item.bestPrice === 'number'
+      ? item.bestPrice
+      : (priceValues.length > 0 ? Math.min(...priceValues) : null);
+
+    const links = item.links || {};
+    const bookingUrl = links[item.cheapestSource] || links.googleFlights || Object.values(links).find(Boolean) || null;
+
+    const totalDuration = typeof item.durationMinutes === 'number'
+      ? item.durationMinutes
+      : parseDurationToMinutes(item.duration);
+
+    const rawSegments = item.segments && item.segments.length > 0
+      ? item.segments
+      : [{
+        airline: item.airline,
+        from: item.from?.airport,
+        to: item.to?.airport,
+        departure: item.departTime,
+        arrival: item.arriveTime,
+        duration: item.duration,
+        durationMinutes: item.durationMinutes,
+      }];
+
+    return {
+      price,
+      totalDuration,
+      stops: typeof item.stops === 'number' ? item.stops : Math.max(rawSegments.length - 1, 0),
+      type: returnDate ? 'round_trip' : 'one_way',
+      bookingUrl,
+      segments: rawSegments.map((segment) => ({
+        airline: segment.airline || item.airline || null,
+        airlineLogo: null,
+        flightNumber: segment.flightCode || null,
+        departureAirport: segment.from || item.from?.airport || null,
+        departureTime: segment.departure || item.departTime || null,
+        arrivalAirport: segment.to || item.to?.airport || null,
+        arrivalTime: segment.arrival || item.arriveTime || null,
+        duration: typeof segment.durationMinutes === 'number'
+          ? segment.durationMinutes
+          : parseDurationToMinutes(segment.duration),
+      })),
+    };
+  });
+
+  // Fall back to a general Google Flights search URL for the route/date if no
+  // individual flight came with its own real booking link.
+  const fallbackSearchUrl = `https://www.google.com/travel/flights?q=${encodeURIComponent(`${departureId} to ${arrivalId} on ${outboundDate}`)}`;
+
+  return {
+    source: 'apify',
+    flights,
+    priceInsights: null,
+    bookingUrl: flights.find((f) => f.bookingUrl)?.bookingUrl || fallbackSearchUrl,
+  };
+}
+
+// Tries Google Flights first; only falls back to the Apify actor if that
+// errors out or comes back with zero results, and only if an Apify token
+// is configured.
+async function getFlightResults(params) {
+  try {
+    const rawData = await callFlightsApi(params);
+    const normalized = normalizeSerpApiFlights(rawData);
+    if (normalized.flights.length > 0) return normalized;
+    console.log('[FALLBACK] Google Flights returned no results, trying Apify flight-price-scraper fallback...');
+  } catch (error) {
+    console.error('Google Flights search failed, trying Apify flight-price-scraper fallback:', error);
+  }
+
+  if (!process.env.APIFY_TOKEN) {
+    return { source: 'google_flights', flights: [], priceInsights: null, bookingUrl: null };
+  }
+
+  try {
+    console.log(`[LIVE API CALL] Hitting Apify flight-price-scraper fallback for flights from ${params.departureId} to ${params.arrivalId}`);
+    const items = await callApifyFlightScraper(params);
+    return normalizeApifyFlights(items, params);
+  } catch (error) {
+    console.error('Apify flight-price-scraper fallback also failed:', error);
+    return { source: 'none', flights: [], priceInsights: null, bookingUrl: null };
+  }
+}
+
+function cheapestPrice(normalized) {
+  const prices = normalized.flights.map((flight) => flight.price).filter((price) => typeof price === 'number');
   if (prices.length > 0) return Math.min(...prices);
-  return rawData.price_insights?.lowest_price ?? null;
+  return normalized.priceInsights?.lowest_price ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,33 +382,24 @@ app.get('/api/flights', async (req, res) => {
   console.log(`[LIVE API CALL] Hitting SerpApi for flights from ${departureId} to ${arrivalId}`);
 
   try {
-    const rawData = await callFlightsApi({ departureId, arrivalId, outboundDate, returnDate, adults });
+    const normalized = await getFlightResults({ departureId, arrivalId, outboundDate, returnDate, adults });
 
-    const flightOptions = [...(rawData.best_flights || []), ...(rawData.other_flights || [])];
-
-    const results = flightOptions.slice(0, 10).map((option) => ({
-      price: option.price ?? null,
-      totalDuration: option.total_duration ?? null,
-      stops: (option.flights?.length || 1) - 1,
-      type: option.type || null,
-      segments: (option.flights || []).map((segment) => ({
-        airline: segment.airline || null,
-        airlineLogo: segment.airline_logo || null,
-        flightNumber: segment.flight_number || null,
-        departureAirport: segment.departure_airport?.id || null,
-        departureTime: segment.departure_airport?.time || null,
-        arrivalAirport: segment.arrival_airport?.id || null,
-        arrivalTime: segment.arrival_airport?.time || null,
-        duration: segment.duration ?? null,
-      })),
+    const results = normalized.flights.slice(0, 10).map((flight) => ({
+      price: flight.price,
+      totalDuration: flight.totalDuration,
+      stops: flight.stops,
+      type: flight.type,
+      bookingUrl: flight.bookingUrl || null,
+      segments: flight.segments,
     }));
 
     res.json({
       results,
-      lowestPrice: rawData.price_insights?.lowest_price ?? null,
-      priceLevel: rawData.price_insights?.price_level ?? null,
-      typicalPriceRange: rawData.price_insights?.typical_price_range ?? null,
-      googleFlightsUrl: rawData.search_metadata?.google_flights_url || null,
+      source: normalized.source,
+      lowestPrice: normalized.priceInsights?.lowest_price ?? null,
+      priceLevel: normalized.priceInsights?.price_level ?? null,
+      typicalPriceRange: normalized.priceInsights?.typical_price_range ?? null,
+      bookingUrl: normalized.bookingUrl,
     });
   } catch (error) {
     console.error('Error fetching live flight data:', error);
@@ -341,30 +523,31 @@ const fetchLiveFlightsTool = tool(
     console.log(`[LIVE API CALL] Hitting SerpApi for flights from ${departureId} to ${arrivalId}`);
 
     try {
-      const rawData = await callFlightsApi({ departureId, arrivalId, outboundDate, returnDate, adults });
+      const normalized = await getFlightResults({ departureId, arrivalId, outboundDate, returnDate, adults });
 
-      const flightOptions = [...(rawData.best_flights || []), ...(rawData.other_flights || [])];
-      if (flightOptions.length === 0) {
-        return `No live flights found from ${departureId} to ${arrivalId} for those dates.`;
+      if (normalized.flights.length === 0) {
+        return `No live flights found from ${departureId} to ${arrivalId} for those dates, even after trying a backup data source.`;
       }
 
-      const formattedFlights = flightOptions.slice(0, 5).map((option) => {
-        const segments = option.flights?.map((segment) => {
-          return `  ${segment.airline || 'Unknown airline'} ${segment.flight_number || ''}: ${segment.departure_airport?.id || ''} ${segment.departure_airport?.time || ''} -> ${segment.arrival_airport?.id || ''} ${segment.arrival_airport?.time || ''}`;
+      const formattedFlights = normalized.flights.slice(0, 5).map((flight) => {
+        const segments = flight.segments.map((segment) => {
+          return `  ${segment.airline || 'Unknown airline'} ${segment.flightNumber || ''}: ${segment.departureAirport || ''} ${segment.departureTime || ''} -> ${segment.arrivalAirport || ''} ${segment.arrivalTime || ''}`;
         }).join('\n') || '  No segment details available';
 
-        const stops = (option.flights?.length || 1) - 1;
-        const durationHours = option.total_duration ? Math.floor(option.total_duration / 60) : null;
-        const durationMinutes = option.total_duration ? option.total_duration % 60 : null;
+        const durationHours = flight.totalDuration ? Math.floor(flight.totalDuration / 60) : null;
+        const durationMinutes = flight.totalDuration ? flight.totalDuration % 60 : null;
         const durationText = durationHours !== null ? `${durationHours}h ${durationMinutes}m` : 'N/A';
 
-        return `Price: $${option.price ?? 'unavailable'}\nStops: ${stops}\nTotal duration: ${durationText}\n${segments}`;
+        return `Price: $${flight.price ?? 'unavailable'}\nStops: ${flight.stops}\nTotal duration: ${durationText}\n${segments}`;
       }).join('\n\n');
 
-      const priceInsightText = formatPriceInsights(rawData.price_insights);
-      const bookingLink = rawData.search_metadata?.google_flights_url ? `\n\nBooking link: ${rawData.search_metadata.google_flights_url}` : '';
+      const priceInsightText = formatPriceInsights(normalized.priceInsights);
+      const bookingLink = normalized.bookingUrl ? `\n\nBooking link: ${normalized.bookingUrl}` : '';
+      const sourceNote = normalized.source === 'apify'
+        ? '\n\n(Note: Google Flights had no listings for this search, so these results came from a backup flight data source instead — mention this to the user.)'
+        : '';
 
-      return `${formattedFlights}\n\n--- Price Insight ---\n${priceInsightText}${bookingLink}`;
+      return `${formattedFlights}\n\n--- Price Insight ---\n${priceInsightText}${bookingLink}${sourceNote}`;
     } catch (error) {
       console.error('Error fetching live flight data:', error);
       return 'An error occurred while fetching live flight data. Please tell the user to try again later.';
@@ -410,7 +593,7 @@ const fetchFlightPriceCalendarTool = tool(
         candidates.map(async ({ candidateOutbound, candidateReturn }) => {
           try {
             const rawData = await callFlightsApi({ departureId, arrivalId, outboundDate: candidateOutbound, returnDate: candidateReturn, adults });
-            return { outboundDate: candidateOutbound, returnDate: candidateReturn, price: cheapestPrice(rawData) };
+            return { outboundDate: candidateOutbound, returnDate: candidateReturn, price: cheapestPrice(normalizeSerpApiFlights(rawData)) };
           } catch {
             return { outboundDate: candidateOutbound, returnDate: candidateReturn, price: null };
           }

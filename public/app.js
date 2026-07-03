@@ -325,7 +325,10 @@ async function searchFlights() {
     }
 
     const lowestPriceNote = data.lowestPrice ? ` Lowest price seen: $${data.lowestPrice}.` : '';
-    setStatus('flightStatus', `Found ${data.results.length} flight options.${lowestPriceNote}`);
+    const sourceNote = data.source === 'apify' ? ' (Google Flights had no listings — showing backup source results.)' : '';
+    setStatus('flightStatus', `Found ${data.results.length} flight options.${lowestPriceNote}${sourceNote}`);
+
+    const bookingLabel = data.source === 'apify' ? 'View & Book' : 'View & Book on Google Flights';
 
     resultsEl.innerHTML = data.results.map((flight) => {
       const durationHours = flight.totalDuration ? Math.floor(flight.totalDuration / 60) : null;
@@ -346,7 +349,7 @@ async function searchFlights() {
             <div class="card-title">${flight.stops === 0 ? 'Nonstop' : `${flight.stops} stop${flight.stops > 1 ? 's' : ''}`} &middot; ${durationText}</div>
             ${segmentsHtml}
             <div class="card-price">$${flight.price ?? 'unavailable'}</div>
-            ${data.googleFlightsUrl ? `<a class="card-link" href="${data.googleFlightsUrl}" target="_blank" rel="noopener noreferrer">View & Book on Google Flights</a>` : ''}
+            ${(flight.bookingUrl || data.bookingUrl) ? `<a class="card-link" href="${flight.bookingUrl || data.bookingUrl}" target="_blank" rel="noopener noreferrer">${bookingLabel}</a>` : ''}
           </div>
         </div>
       `;
