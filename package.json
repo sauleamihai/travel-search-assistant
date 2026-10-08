@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test --test-isolation=none tests/api.test.js",
+    "test:ci": "node --test --test-isolation=none --test-reporter=spec --test-reporter=junit --test-reporter-destination=stdout --test-reporter-destination=test-results.xml tests/api.test.js",
+    "check": "node --check src/server.js && node --check public/app.js && node --check scripts/build-airports.js"
   },
   "keywords": [],
   "author": "",
