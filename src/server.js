@@ -7,6 +7,7 @@ import { ChatGroq } from '@langchain/groq';
 import { tool } from '@langchain/core/tools';
 import { SystemMessage, HumanMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { z } from 'zod';
+import { pathToFileURL } from 'node:url';
 
 dotenv.config();
 
@@ -19,7 +20,7 @@ if (!process.env.APIFY_TOKEN) {
   console.warn('[startup] Missing optional env var: APIFY_TOKEN (flight fallback disabled — Google Flights failures/empty results will not retry via the Apify flight-price-scraper actor).');
 }
 
-const app = express();
+export const app = express();
 const PORT = process.env.PORT || 3000;
 const MAX_HISTORY_TURNS = 20;
 const messageHistories = {};
@@ -30,6 +31,9 @@ function getSessionHistory(sessionId) {
   }
   return messageHistories[sessionId];
 }
+
+// Enable only when the app is reachable exclusively through one trusted proxy.
+if (process.env.TRUST_PROXY_HOPS === '1') app.set('trust proxy', 1);
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -43,6 +47,7 @@ app.use(cors({ origin: ['http://localhost:5173', `http://localhost:${PORT}`], me
 app.use(express.json());
 app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
 app.use(express.static('public'));
+app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
 
 // ---------------------------------------------------------------------------
 // Raw data-fetching helpers — shared by the REST endpoints (used by the
@@ -730,6 +735,14 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Live Agent Server listening securely on http://localhost:${PORT}`);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const server = app.listen(PORT, () => {
+    console.log(`Live Agent Server listening on http://localhost:${PORT}`);
+  });
+  const shutdown = () => {
+    server.close(() => { process.exitCode = 0; });
+    setTimeout(() => process.exit(1), 10_000).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+}

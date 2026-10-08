@@ -1,0 +1,25 @@
+services:
+  app:
+    image: ${APP_IMAGE:-travel-search:local}
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
